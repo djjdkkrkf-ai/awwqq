@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>For You</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;800;900&family=Prompt:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+  <!-- ฉากเริ่มต้น -->
+  <section id="start" class="scene active">
+    <div class="start-box">
+      <div class="gift">🎁</div>
+      <h1>มีอะไรจะให้ดู</h1>
+      <p>เปิดเสียงด้วยนะ แล้วกดปุ่มด้านล่าง</p>
+      <label class="pick">
+        <input type="file" id="picker" accept="image/*" multiple hidden>
+        เลือกรูป (ไม่บังคับ)
+      </label>
+      <span id="pickInfo"></span>
+      <button id="startBtn" class="btn">เริ่มเลย ♥</button>
+    </div>
+  </section>
+
+  <!-- พื้นหลังเอฟเฟกต์ -->
+  <canvas id="fx"></canvas>
+
+  <!-- ตัวหนังสือใหญ่ -->
+  <section id="words" class="scene">
+    <div id="word"></div>
+  </section>
+
+  <!-- ลูกโลกรูปภาพ -->
+  <section id="sphereScene" class="scene">
+    <div class="sphere-stage">
+      <div id="sphere"></div>
+    </div>
+    <button id="enterBtn" class="btn small">ENTER ♥</button>
+  </section>
+
+  <!-- กำแพงรูปภาพโค้ง -->
+  <section id="wallScene" class="scene">
+    <div class="wall-stage">
+      <div id="wall"></div>
+    </div>
+    <div class="card">
+      <div class="hb">MY LOVE</div>
+      <div class="name" id="nameText"></div>
+      <div class="msg" id="msg"></div>
+    </div>
+  </section>
+
+  <!-- ดูรูป/วิดีโอเต็มจอ -->
+  <div id="viewer">
+    <button id="viewerClose" aria-label="ปิด">✕</button>
+    <div id="viewerBody"></div>
+  </div>
+
+  <audio id="music" loop></audio>
+
+  <script>
+    /* ====== แก้ตรงนี้ได้เลย ====== */
+    const CONFIG = {
+      name: "",                    // ชื่อแฟน (ว่างไว้ = ไม่แสดงชื่อ)
+      // รูปหรือวิดีโอ (.jpg .png .mp4 ...) จะวนใส่ในลูกโลกและกำแพงรูป
+      // ถ้าเว้นว่างไว้ จะใช้รูปตัวอย่างแทน (หรือกด "เลือกรูป" ที่หน้าแรก)
+      photos: [
+        "images/1.jpg", "11.mp4", "images/2.jpg", "1222.mp4",
+        "12333.mp4", "12344.mp4", "1234555.mp4"
+      ],
+      music: "",                       // เช่น "song.mp3" (ว่างไว้ = ไม่มีเพลง)
+      message: [
+        "ขอบคุณที่เข้ามาในชีวิตกันนะ",
+        "ทุกวันที่มีเธอคือวันที่ดีที่สุดเลย",
+        "อยู่ด้วยกันไปนาน ๆ นะ",
+        "รักนะ ♥"
+      ]
+    };
+    /* ============================== */
+
+    const $ = id => document.getElementById(id);
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    let photos = CONFIG.photos.slice();
+
+    // รูปตัวอย่าง (ถ้ายังไม่ได้ใส่รูป)
+    function placeholder(i) {
+      const c = document.createElement("canvas");
+      c.width = 240; c.height = 300;
+      const g = c.getContext("2d");
+      const hues = [330, 280, 20, 200, 350, 260, 40];
+      const h = hues[i % hues.length];
+      const grad = g.createLinearGradient(0, 0, 240, 300);
+      grad.addColorStop(0, `hsl(${h},80%,78%)`);
+      grad.addColorStop(1, `hsl(${(h + 40) % 360},70%,55%)`);
+      g.fillStyle = grad; g.fillRect(0, 0, 240, 300);
+      g.font = "90px serif"; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText(["💖", "🎂", "🎉", "🥰", "✨", "🎈", "🌸"][i % 7], 120, 130);
+      g.fillStyle = "rgba(255,255,255,.9)"; g.font = "600 26px Prompt, sans-serif";
+      g.fillText("รูปที่ " + (i + 1), 120, 240);
+      return c.toDataURL("image/jpeg", .8);
+    }
+    const photoAt = i => photos.length ? photos[i % photos.length] : placeholder(i % 12);
+
+    const pickedVideos = new Set();
+    const isVideo = src => pickedVideos.has(src) || /\.(mp4|webm|mov|m4v)$/i.test(src);
+
+    $("picker").addEventListener("change", e => {
+      const files = [...e.target.files];
+      photos = files.map(f => {
+        const u = URL.createObjectURL(f);
+        if (f.type.startsWith("video/")) pickedVideos.add(u);
+        return u;
+      });
+      $("pickInfo").textContent = files.length ? `เลือกแล้ว ${files.length} ไฟล์` : "";
+    });
+
+    /* ---------- วิดีโอ: โหลดไฟล์ละครั้งเดียว แล้ววาดลงทุกช่อง ---------- */
+    const videos = new Map(), videoTiles = [];
+    function getVideo(src) {
+      if (!videos.has(src)) {
+        const v = document.createElement("video");
+        v.src = src; v.muted = true; v.loop = true; v.playsInline = true; v.preload = "auto";
+        v.play().catch(() => {});
+        videos.set(src, v);
+      }
+      return videos.get(src);
+    }
+    function makeTile(i) {
+      const src = photoAt(i);
+      let el;
+      if (isVideo(src)) {
+        el = document.createElement("canvas");
+        el.width = 180; el.height = 220;
+        videoTiles.push({ el, g: el.getContext("2d"), v: getVideo(src) });
+      } else {
+        el = document.createElement("img");
+        el.src = src;
+      }
+      el.className = "tile";
+      el.dataset.src = src;
+      return el;
+    }
+    function drawVideoTiles() {
+      for (const { el, g, v } of videoTiles) {
+        if (!el.isConnected || v.readyState < 2) continue;
+        // ครอปแบบ cover ให้เต็มช่อง
+        const s = Math.max(el.width / v.videoWidth, el.height / v.videoHeight);
+        const w = v.videoWidth * s, h = v.videoHeight * s;
+        g.drawImage(v, (el.width - w) / 2, (el.height - h) * .3, w, h);
+      }
+      setTimeout(() => requestAnimationFrame(drawVideoTiles), 50);
+    }
+    drawVideoTiles();
+    const clearTiles = () => { videoTiles.length = 0; };
+
+    /* ---------- กดดูรูป/วิดีโอเต็มจอ ---------- */
+    function openViewer(src) {
+      const box = $("viewer"), body = $("viewerBody");
+      body.innerHTML = "";
+      let el;
+      if (isVideo(src)) {
+        el = document.createElement("video");
+        el.src = src; el.controls = true; el.autoplay = true; el.playsInline = true;
+        $("music").pause();
+      } else {
+        el = document.createElement("img"); el.src = src;
+      }
+      body.appendChild(el);
+      box.classList.add("open");
+    }
+    function closeViewer() {
+      $("viewer").classList.remove("open");
+      $("viewerBody").innerHTML = "";
+      if (CONFIG.music) $("music").play().catch(() => {});
+    }
+    $("viewer").addEventListener("click", e => { if (e.target.id === "viewer" || e.target.id === "viewerClose") closeViewer(); });
+    $("wall").addEventListener("click", e => { if (e.target.dataset.src) openViewer(e.target.dataset.src); });
+
+    /* ---------- เอฟเฟกต์ canvas ---------- */
+    const cv = $("fx"), ctx = cv.getContext("2d");
+    let W, H, mode = "none", t0 = 0, stars = [];
+    function resize() {
+      W = cv.width = innerWidth * devicePixelRatio;
+      H = cv.height = innerHeight * devicePixelRatio;
+      stars = Array.from({ length: 220 }, () => ({
+        x: Math.random() * W, y: Math.random() * H,
+        r: Math.random() * 1.6 + .3, p: Math.random() * 6
+      }));
+    }
+    addEventListener("resize", resize); resize();
+
+    const rays = Array.from({ length: 260 }, () => ({
+      a: Math.random() * Math.PI * 2, s: .5 + Math.random(), l: .2 + Math.random() * .8,
+      hue: 280 + Math.random() * 80
+    }));
+
+    function draw(now) {
+      const t = (now - t0) / 1000, cx = W / 2, cy = H / 2, R = Math.hypot(W, H) / 2;
+      if (mode === "swirl") {
+        ctx.fillStyle = "rgba(20,10,30,.25)"; ctx.fillRect(0, 0, W, H);
+        ctx.globalCompositeOperation = "lighter";
+        for (const r of rays) {
+          const len = Math.min(1, t * r.s * .9) * R * r.l;
+          ctx.strokeStyle = `hsla(${r.hue},90%,70%,.5)`;
+          ctx.lineWidth = 2 * devicePixelRatio;
+          ctx.beginPath();
+          for (let k = 0; k <= 20; k++) {
+            const d = len * k / 20, a = r.a + d / R * 2.2 + t * .3;
+            const x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d;
+            k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+          }
+          ctx.stroke();
+        }
+        const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * .3);
+        glow.addColorStop(0, "rgba(255,120,255,.9)"); glow.addColorStop(1, "rgba(255,0,200,0)");
+        ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
+        ctx.globalCompositeOperation = "source-over";
+      } else if (mode === "burst") {
+        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+        ctx.globalCompositeOperation = "lighter";
+        const ph = t % 1;
+        for (const r of rays) {
+          const d0 = R * (.08 + ((ph * r.s * 1.4 + r.l) % 1) * .9);
+          const d1 = d0 + R * .12 * r.l;
+          ctx.strokeStyle = `rgba(255,${200 + r.l * 55},${180 + r.s * 60},${.35 + r.l * .4})`;
+          ctx.lineWidth = devicePixelRatio;
+          ctx.beginPath();
+          ctx.moveTo(cx + Math.cos(r.a) * d0, cy + Math.sin(r.a) * d0);
+          ctx.lineTo(cx + Math.cos(r.a) * d1, cy + Math.sin(r.a) * d1);
+          ctx.stroke();
+        }
+        ctx.globalCompositeOperation = "source-over";
+      } else if (mode === "stars") {
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+        g.addColorStop(0, "#1c0a22"); g.addColorStop(1, "#050208");
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+        for (const s of stars) {
+          ctx.globalAlpha = .4 + .6 * Math.abs(Math.sin(t * 1.5 + s.p));
+          ctx.fillStyle = "#fff";
+          ctx.beginPath(); ctx.arc(s.x, s.y, s.r * devicePixelRatio, 0, 7); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+      requestAnimationFrame(draw);
+    }
+    requestAnimationFrame(draw);
+    const setMode = m => { mode = m; t0 = performance.now(); if (m === "none") ctx.clearRect(0, 0, W, H); };
+
+    /* ---------- ฉาก ---------- */
+    function show(id) {
+      document.querySelectorAll(".scene").forEach(s => s.classList.toggle("active", s.id === id));
+    }
+    async function word(text, bg, cls = "", ms = 1100) {
+      const w = $("word");
+      $("words").style.background = bg;
+      w.className = cls; w.textContent = text;
+      void w.offsetWidth; w.classList.add("pop");
+      await sleep(ms);
+    }
+
+    /* ---------- ลูกโลกรูป ---------- */
+    function buildSphere() {
+      const el = $("sphere"); el.innerHTML = ""; clearTiles();
+      const R = Math.min(innerWidth, innerHeight) * .32;
+      el.parentElement.style.setProperty("--r", R + "px");
+      let i = 0;
+      for (let lat = -60; lat <= 60; lat += 30) {
+        const n = Math.max(6, Math.round(14 * Math.cos(lat * Math.PI / 180)));
+        for (let k = 0; k < n; k++) {
+          const img = makeTile(i++);
+          img.style.transform = `rotateY(${k * 360 / n}deg) rotateX(${lat}deg) translateZ(${R}px)`;
+          el.appendChild(img);
+        }
+      }
+    }
+
+    /* ---------- กำแพงโค้ง ---------- */
+    function buildWall() {
+      const el = $("wall"); el.innerHTML = ""; clearTiles();
+      const R = Math.max(innerWidth, 700) * .75, n = 18;
+      let i = 0;
+      for (let row = -2; row <= 2; row++) {
+        for (let k = 0; k < n; k++) {
+          const img = makeTile(i++);
+          const tilt = (Math.random() - .5) * 10;
+          img.style.transform =
+            `rotateY(${k * 360 / n + row * 8}deg) translateZ(${-R}px) translateY(${row * 190}px) rotateZ(${tilt}deg)`;
+          el.appendChild(img);
+        }
+      }
+    }
+
+    async function typeMessage() {
+      const box = $("msg"); box.innerHTML = "";
+      for (const line of CONFIG.message) {
+        const p = document.createElement("p"); box.appendChild(p);
+        for (const ch of line) { p.textContent += ch; await sleep(55); }
+        await sleep(350);
+      }
+    }
+
+    /* ---------- ลำดับทั้งหมด ---------- */
+    $("startBtn").addEventListener("click", async () => {
+      if (CONFIG.music) { const m = $("music"); m.src = CONFIG.music; m.play().catch(() => {}); }
+      // เริ่มโหลดวิดีโอตั้งแต่ตอนกดปุ่ม จะได้เล่นทันตอนถึงลูกโลก
+      photos.filter(isVideo).forEach(getVideo);
+      show("none");
+      setMode("swirl"); await sleep(2600);
+
+      setMode("burst"); show("words");
+      $("words").classList.add("clear");
+      for (const n of ["3", "2", "1"]) await word(n, "transparent", "count", 1000);
+      $("words").classList.remove("clear");
+      setMode("none");
+
+      await word("I", "radial-gradient(circle,#ff7a3d,#5a1206)", "", 900);
+      await word("LOVE", "radial-gradient(circle,#ff6a2b,#3a0a05)", "glow", 1000);
+      await word("YOU", "radial-gradient(circle,#9b3bff,#2a0a6a)", "", 900);
+      if (CONFIG.name) await word(CONFIG.name, "radial-gradient(circle,#ff4fa3,#3b0624)", "glow pink", 1500);
+
+      show("none"); setMode("stars"); await sleep(1500);
+      buildSphere(); show("sphereScene");
+    });
+
+    $("enterBtn").addEventListener("click", async () => {
+      $("sphereScene").classList.add("zoom");
+      await sleep(900);
+      $("nameText").textContent = CONFIG.name;
+      $("nameText").hidden = !CONFIG.name;
+      buildWall(); show("wallScene");
+      await sleep(1200);
+      typeMessage();
+    });
+  </script>
+</body>
+</html>
